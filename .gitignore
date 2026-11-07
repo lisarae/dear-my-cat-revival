@@ -1,0 +1,29 @@
+# Game files: never commit these
+*.apk
+*.xapk
+*.apks
+*.obb
+*.idsig
+*.so
+global-metadata.dat
+globalgamemanagers
+patched/
+dump/
+decoded/
+base/
+native/
+*.sym.pkl
+
+# Personal data written by the server
+dmc_save.json
+dmc_save.json.tmp
+requests.log
+
+# Tools people download themselves
+*.jar
+platform-tools/
+
+# OS / Python clutter
+.DS_Store
+__pycache__/
+*.pyc
