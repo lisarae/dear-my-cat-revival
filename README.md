@@ -2,7 +2,7 @@
 
 Play **Dear My Cat** (version 2.1.9) again after its official servers shut down.
 
-This project is a small stand-in server that runs on your own computer, plus a patcher that points your copy of the game at it. The game runs in an Android emulator (BlueStacks), talks to the server on your computer, and saves your progress there.
+This project is a small stand-in server that runs on your own computer, plus a patcher that points your copy of the game at it. The game runs in an Android emulator (BlueStacks), talks to the server on your computer, and saves your progress locally.
 
 > **This repository contains no game files.** You download the game yourself (see step 2). The patcher only changes your own copy. This is an unofficial fan project, not affiliated with Flero Games or LikeitGames. All rights to Dear My Cat belong to its owners.
 
