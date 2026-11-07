@@ -1,6 +1,6 @@
 # Contributing
 
-When the game is trying to connect to a server, **a may screen freeze, so there is a need to log the reply that was missing in order to teach `server/fakeserver.py` to send it.**
+When the game is trying to connect to a server, **a screen can freeze, so there is a need to log the reply that was missing in order to teach `server/fakeserver.py` to send it.**
 
 ## 1. Find the request
 
