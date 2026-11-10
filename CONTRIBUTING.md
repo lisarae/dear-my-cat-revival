@@ -4,7 +4,7 @@ When the game is trying to connect to a server, **a screen can freeze, so there 
 
 ## 1. Find the request
 
-With the server running, reproduce the freeze. The last line in the server window (or in `requests.log`) is usually the culprit, especially if it says `[no special handler, sent plain success]`.
+With the server running, reproduce the freeze. Then look for the last request that isn't `/ping` in the server window (or in `requests.log`). The game sends requests one at a time, so a reply missing a required key jams every later request while `/ping` keeps arriving (see "Requests are sent one at a time" in [docs/FINDINGS.md](docs/FINDINGS.md)). Requests the server has no handler for are marked with `>>> UNHANDLED <<<` as well as `[no special handler, sent plain success]`.
 
 ## 2. Find what the game reads from the reply
 

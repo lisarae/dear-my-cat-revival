@@ -15,15 +15,26 @@ What the game's code expects (found by disassembling version 2.1.9):
                    optional session_id / umoneydata. state 0 = normal (2 = banned).
   * user/get_info: "user": {udata}, "umoneydata": {...}
   * deco_info/get_deco: "deco": {"deco_data": "..."}
+  * deco/get_preset:    "preset": [] (list of saved decoration presets).
+                        Without it the decoration screen (level 7) freezes.
+  * deco/insert_preset: "new_preset_idx": <int>
+  * get_event:          "event_info": [] (list of running events).
+                        Without it the game's request queue jams (see below).
   * udata / deco_data are the game's save files as JSON text; "{}" means "nothing
     stored on the server, keep the save on the device".
 
 Saves the game uploads (user/update, deco_info/update_deco, daily quests...) are
 kept in dmc_save.json in the data folder (default: next to this file) and handed back on the next login, so progress
 survives reinstalls as long as you keep that file.
-Every request is printed and appended to requests.log in the same folder.
-A request marked [no special handler] got a generic reply; if the game freezes,
+Every request is printed and appended to requests.log in the same folder;
+requests_full.log has the same requests and replies without truncation.
+A request marked >>> UNHANDLED <<< got a generic reply; if the game freezes,
 that is usually the place to look (see CONTRIBUTING.md).
+
+The game sends requests one at a time from a queue. If a reply is missing a
+required key, the game's handler crashes, that request never finishes, and
+every later request waits behind it forever (only /ping still gets through).
+So a freeze can show up on a screen far away from the request that caused it.
 """
 import argparse
 import datetime
@@ -44,6 +55,7 @@ PORT = ARGS.port
 DATA_DIR = os.path.abspath(os.path.expanduser(ARGS.data_dir))
 os.makedirs(DATA_DIR, exist_ok=True)
 LOGFILE = os.path.join(DATA_DIR, "requests.log")
+FULLLOG = os.path.join(DATA_DIR, "requests_full.log")
 SAVEFILE = os.path.join(DATA_DIR, "dmc_save.json")
 # The patcher pads the game's server address with a dummy folder of x's.
 PADDING = re.compile(r"^/x+(?=/)")
@@ -81,6 +93,8 @@ def save_state(state):
 
 
 STATE = load_state()
+if not isinstance(STATE.get("presets", {}), dict):   # early test builds stored a list
+    STATE["presets"] = {}
 
 
 def ok(**extra):
@@ -195,6 +209,70 @@ def h_coupon_state(p):
     return ok(status=0)
 
 
+# ---------- decoration presets ----------
+# deco/get_preset reply: "preset" REQUIRED, a list of DecoPresetServerData:
+#   {preset_idx, user_idx, slot_idx (0-5), pdata (an OBJECT, never null)}.
+#   The game shows a loading overlay before asking and only hides it here.
+# deco/insert_preset: request slot_idx + pdata (JSON text); reply "new_preset_idx" REQUIRED.
+# deco/update_preset: request preset_idx + pdata (JSON text); reply envelope only.
+def _presets():
+    return STATE.setdefault("presets", {})   # {"<preset_idx>": {"slot_idx": n, "pdata": {...}}}
+
+
+def _parse_pdata(p):
+    pd = p.get("pdata")
+    if isinstance(pd, str):
+        try:
+            pd = json.loads(pd)
+        except ValueError:
+            pd = None
+    return pd if isinstance(pd, dict) else None
+
+
+def h_get_preset(p):
+    out = []
+    for idx, entry in sorted(_presets().items(), key=lambda kv: int(kv[0])):
+        slot = entry.get("slot_idx")
+        if isinstance(entry.get("pdata"), dict) and isinstance(slot, int) and 0 <= slot <= 5:
+            out.append({"preset_idx": int(idx), "user_idx": USER_IDX,
+                        "slot_idx": slot, "pdata": entry["pdata"]})
+    return ok(preset=out)
+
+
+def h_insert_preset(p):
+    presets = _presets()
+    slot = p.get("slot_idx") if isinstance(p.get("slot_idx"), int) else 0
+    # one preset per slot: reuse that slot's number if it already exists
+    idx = next((int(k) for k, v in presets.items() if v.get("slot_idx") == slot), None)
+    if idx is None:
+        idx = max([int(k) for k in presets] + [0]) + 1
+    presets[str(idx)] = {"slot_idx": slot, "pdata": _parse_pdata(p) or {}}
+    save_state(STATE)
+    return ok(new_preset_idx=idx)
+
+
+def h_update_preset(p):
+    presets = _presets()
+    idx = p.get("preset_idx")
+    pd = _parse_pdata(p)
+    if isinstance(idx, int) and str(idx) in presets and pd is not None:
+        presets[str(idx)]["pdata"] = pd
+        save_state(STATE)
+    return ok()
+
+
+# ---------- events ----------
+# get_event reply: "event_info" REQUIRED, a list of ServerEventInfo
+#   {event_idx, event_id, type, begin_date, end_date}. [] = no events running.
+def h_get_event(p):
+    return ok(event_info=[])
+
+
+# token/get_season_token: "season_infos" / "now_season_info" are optional.
+def h_season_token(p):
+    return ok()
+
+
 HANDLERS = {
     "/ping": h_ping,
     "/ver/check": h_ver_check,
@@ -210,6 +288,11 @@ HANDLERS = {
     "/daily_reset/get_daily_reset": h_get_daily_reset,
     "/daily_reset/update_daily_reset": h_save_daily_reset,
     "/coupon/state": h_coupon_state,
+    "/deco/get_preset": h_get_preset,
+    "/deco/insert_preset": h_insert_preset,
+    "/deco/update_preset": h_update_preset,
+    "/get_event": h_get_event,
+    "/token/get_season_token": h_season_token,
 }
 
 
@@ -236,7 +319,7 @@ class Handler(BaseHTTPRequestHandler):
         path = PADDING.sub("", self.path.split("?")[0]) or "/"
 
         handler = HANDLERS.get(path)
-        tag = "" if handler else "  [no special handler, sent plain success]"
+        tag = "" if handler else "  >>> UNHANDLED <<< [no special handler, sent plain success]"
         try:
             reply = (handler or (lambda p: ok()))(params)
         except Exception as e:  # never let the server crash mid-game
@@ -255,6 +338,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             with open(LOGFILE, "a") as f:
                 f.write("\n".join(lines) + "\n")
+            with open(FULLLOG, "a") as f:
+                f.write("[%s] %s %s%s\nSENT : %s\nREPLY: %s\n\n" % (
+                    stamp, self.command, path, tag,
+                    json.dumps(params) if params else text, out.decode()))
         except OSError:
             pass
 
@@ -284,7 +371,7 @@ def local_ip():
 if __name__ == "__main__":
     print("Dear My Cat server listening on port %d" % PORT, flush=True)
     print("This computer's address: %s  (must match the address you patched in)" % local_ip())
-    print("save: %s\nlog:  %s" % (SAVEFILE, LOGFILE), flush=True)
+    print("save: %s\nlog:  %s\nfull: %s" % (SAVEFILE, LOGFILE, FULLLOG), flush=True)
     try:
         ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
     except KeyboardInterrupt:

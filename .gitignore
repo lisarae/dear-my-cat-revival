@@ -18,6 +18,7 @@ native/
 dmc_save.json
 dmc_save.json.tmp
 requests.log
+requests_full.log
 
 # Tools people download themselves
 *.jar

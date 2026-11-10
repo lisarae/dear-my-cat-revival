@@ -26,7 +26,15 @@ The reply is parsed as JSON:
   - any other value: generic server-error popup
 - If the reply body is empty, the error callback is used.
 
-**Rule of thumb:** an endpoint handler that reads a key with `JObject[...]` (a required key) and finds it missing throws an exception inside a Unity coroutine. It **does not show an error**. The game simply freezes or stays dimmed. Keys read with `TryGetValue` are optional.
+**Rule of thumb:** an endpoint handler that reads a key with `JObject[...]` (a required key) and finds it missing throws an exception inside a Unity coroutine. It **does not show an error**. The game simply freezes or stays dimmed. Keys read with `TryGetValue` (or checked with `ContainsKey` first) are optional.
+
+## Requests are sent one at a time
+
+`WASServerClient` keeps a queue (`_packetList`) and a single `_currentPacket`. The next request is sent only after the current one's reply handler finishes. **If a handler crashes on a missing required key, that request never finishes and every later request waits behind it forever.** `GET /ping` uses a separate path, so it keeps arriving every few seconds and the server looks alive.
+
+What this looks like: the server log stops at one request (often one marked UNHANDLED), followed only by `/ping`. The screen that freezes can be far from the request that caused it. For example, a missing `event_info` in `get_event`, called just after loading, froze the level 7 decoration tutorial and a photo mission later on.
+
+Debugging tip: when the game freezes, look for the **last request that isn't `/ping`**, not just the last line.
 
 ## Endpoints the server handles
 
@@ -46,12 +54,17 @@ The reply is parsed as JSON:
 | `daily_reset/update_daily_reset` | — | The request carries `ddata` (JSON text) |
 | `coupon/state` | — | Optional `status` |
 | `user/get_user_platform` | — | Reads `is_user` (only used when changing the platform account) |
+| `deco/get_preset` | `preset` (list) | Each item is `DecoPresetServerData`: `preset_idx`, `user_idx`, `slot_idx` (0–5), `pdata` (a `LocalDecoPresetData` **object**, not text, and never null). `[]` means no presets. The game shows a loading overlay before asking and only hides it in this handler, so **a missing key freezes the decoration screen (level 7 tutorial).** Called after loading, from `_CheckDecoPresetServerMatch`, once decoration is unlocked. |
+| `deco/insert_preset` | `new_preset_idx` (int) | The request carries `slot_idx` and `pdata` (JSON text of `LocalDecoPresetData`: `name`, `preset_idx`, `theme`, `isOpen`, `decos`, `areaIds`, `pos`, `rot`, `interac`). |
+| `deco/update_preset` | — | The request carries `preset_idx` and `pdata` (JSON text). |
+| `get_event` | `event_info` (list) | Each item is `ServerEventInfo`: `event_idx`, `event_id`, `type`, `begin_date`, `end_date`. `[]` means no events. Also feeds the shop package lists. **A missing key jams the request queue (see above).** Sent by `EventController._GetEventInfo` about 5 seconds after loading. |
+| `token/get_season_token` | — | Optional `season_infos` (list) and `now_season_info` (`SeasonToken_Respone`: `event_id`, `event_start_time`, `event_end_time`, `shop_end_time`, `package_id`). Sent with `get_event`. |
 
 ## Endpoints not handled yet (generic success reply)
 
 These come from `WAS.ServerAPI`. Some may freeze the screen that uses them:
 
-`withdrawal`, `login_apple`, `user/get_other_user_info`, `insert_logItem`, `insert_log_ads`, `insert_log_switch`, `shop/*`, `aos/validate*`, `ios/validate*`, `inapp/*`, `insert_subItem`, `mailbox/*`, `get_event`, `user_event/*`, `personal_event/*`, `deco/insert_preset`, `deco/get_preset`, `deco/update_preset`, `diamond/restore`, `user_tag/*`, `user/get_other_user_info_by_tag`, `bookmark/*`, `social/*`, `token/*`, `coupon/check`, `req_move_code`, `validate_move_code`, `move_data`, `reset_user_data`
+`withdrawal`, `login_apple`, `user/get_other_user_info`, `insert_logItem`, `insert_log_ads`, `insert_log_switch`, `shop/*`, `aos/validate*`, `ios/validate*`, `inapp/*`, `insert_subItem`, `mailbox/*`, `user_event/*`, `personal_event/*`, `diamond/restore`, `user_tag/*`, `user/get_other_user_info_by_tag`, `bookmark/*`, `social/*`, `token/*`, `coupon/check`, `req_move_code`, `validate_move_code`, `move_data`, `reset_user_data`
 
 The `insert_log*` endpoints are analytics and are fine with the envelope alone.
 
@@ -66,4 +79,4 @@ The `insert_log*` endpoints are analytics and are fine with the envelope alone.
 7. `TermsCheck`
 8. `WaitForLoadingAD`
 
-After loading: `coupon/state`, `daily_reset/get_daily_reset`, and `daily_quest/get_daily_quest` when daily quests open.
+After loading: `deco/get_preset` (once decoration is unlocked), `coupon/state`, `daily_reset/get_daily_reset`, `daily_quest/get_daily_quest` when daily quests open, then `get_event` and `token/get_season_token`.
