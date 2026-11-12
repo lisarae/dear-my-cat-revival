@@ -6,7 +6,7 @@ This project is a small stand-in server that runs on your own computer, plus a p
 
 > **This repository contains no game files.** You download the game yourself (see step 2). The patcher only changes your own copy. This is an unofficial fan project, not affiliated with Flero Games or LikeitGames. All rights to Dear My Cat belong to its owners.
 
-**Status:** loading, cats, decorating, daily quests and saving all work. Features that used the online service (shop purchases, mail, events, friends and social features) are untested or may not work. See [docs/FINDINGS.md](docs/FINDINGS.md).
+**Status:** loading, cats, decorating, daily quests and saving all work. Setting a nickname and opening the social menu work, however, friends, ranking and helping a friend are untested or may not work. Features that used the online service (shop purchases, mail, events) remain untested. See [docs/FINDINGS.md](docs/FINDINGS.md).
 
 **Tested on:** macOS (Apple Silicon) with BlueStacks Air. Windows should work the same way but hasn't been tested yet. Reports are welcome.
 
