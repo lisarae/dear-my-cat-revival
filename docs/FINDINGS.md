@@ -22,7 +22,7 @@ The reply is parsed as JSON:
   - `6666`: deleted user
   - `20000`: duplicate login
   - `20001`: session expired
-  - `8602`, `8603`, `8610`, `8700`: social and help errors
+  - `8602`, `8603`, `8610`, `8700`: social and help errors. The game has handling for these, but which code means what has **not** been confirmed. `fakeserver.py` uses `8602` for "player not found" in `user_tag/get_user_tag`, which is a guess.
   - any other value: generic server-error popup
 - If the reply body is empty, the error callback is used.
 
@@ -32,9 +32,13 @@ The reply is parsed as JSON:
 
 `WASServerClient` keeps a queue (`_packetList`) and a single `_currentPacket`. The next request is sent only after the current one's reply handler finishes. **If a handler crashes on a missing required key, that request never finishes and every later request waits behind it forever.** `GET /ping` uses a separate path, so it keeps arriving every few seconds and the server looks alive.
 
-What this looks like: the server log stops at one request (often one marked UNHANDLED), followed only by `/ping`. The screen that freezes can be far from the request that caused it. For example, a missing `event_info` in `get_event`, called just after loading, froze the level 7 decoration tutorial and a photo mission later on.
+What this looks like: the server log stops at one request (often one marked UNHANDLED), followed only by `/ping`. The screen that freezes can be far from the request that caused it. For example, a missing `event_info` in `get_event`, called just after loading, froze the level 7 decoration tutorial and a photo mission later on. A reply to `user_tag/make_tag` without `user_tag` froze the nickname screen the moment "Connect" was pressed.
 
 Debugging tip: when the game freezes, look for the **last request that isn't `/ping`**, not just the last line.
+
+Also check that the server you are looking at is the one the game is really talking to. Several freezes during the social work came from running a copy of `fakeserver.py` that had no social handlers, while a newer file sat unused next to it. Run the server with a full path, and look for the startup lines it prints.
+
+The game's own Unity log is silent after startup, so `adb logcat` does not show these exceptions. The server log is the useful one.
 
 ## Endpoints the server handles
 
@@ -59,12 +63,22 @@ Debugging tip: when the game freezes, look for the **last request that isn't `/p
 | `deco/update_preset` | — | The request carries `preset_idx` and `pdata` (JSON text). |
 | `get_event` | `event_info` (list) | Each item is `ServerEventInfo`: `event_idx`, `event_id`, `type`, `begin_date`, `end_date`. `[]` means no events. Also feeds the shop package lists. **A missing key jams the request queue (see above).** Sent by `EventController._GetEventInfo` about 5 seconds after loading. |
 | `token/get_season_token` | — | Optional `season_infos` (list) and `now_season_info` (`SeasonToken_Respone`: `event_id`, `event_start_time`, `event_end_time`, `shop_end_time`, `package_id`). Sent with `get_event`. |
+| `user_tag/make_tag` | `user_tag` (object) | Nickname registration. The request carries `name`, `img_id`, `local`, `ver`. The reply `user_tag` is a `Social_UserTag`: `tag_idx`, `user_idx`, `login_date`, `tag` (the friend code), `name`, `img_id`, `local`, `ver`, `point`, `season`, `ranking_point`, `last_rnds`. **A missing `user_tag` freezes the nickname screen.** The game counts the player as registered (`SocialController.get_IsRegistSocialData`) only when the stored `tag` string is non-empty. |
+| `user_tag/change_name`, `user_tag/change_img` | — | Envelope only |
+| `user_tag/get_user_tag` | `user_tag` (object) | Search for a player by friend code. Used by the search screen. The "not found" error code is not confirmed (see the error list above). |
+| `user_tag/get_rnd_tags` | `user_tags` (list) | Random players list. `[]` means none. |
+| `social/social_info` | — | Opens the social menu. All keys are optional: `user_tag`, `behelped_infos`, `bookmarks`. The game also reads `help_record`, `user_tags` and `my_point` if present. **Without `user_tag` the game shows the nickname screen again**, so send it whenever a nickname has been saved. |
+| `social/get_be_helped_infos`, `social/get_be_helped_infos_by_rnds` | — | Optional `behelped_infos` (list). `[]` means nobody has helped. |
+| `social/get_last_season_hallfame` | `hallfame` (list) | Ranking screen. `[]` means no entries. |
+| `bookmark/get_bookmarks` | `bookmarks` (list) | Friends list. `[]` means no friends. |
 
 ## Endpoints not handled yet (generic success reply)
 
 These come from `WAS.ServerAPI`. Some may freeze the screen that uses them:
 
-`withdrawal`, `login_apple`, `user/get_other_user_info`, `insert_logItem`, `insert_log_ads`, `insert_log_switch`, `shop/*`, `aos/validate*`, `ios/validate*`, `inapp/*`, `insert_subItem`, `mailbox/*`, `user_event/*`, `personal_event/*`, `diamond/restore`, `user_tag/*`, `user/get_other_user_info_by_tag`, `bookmark/*`, `social/*`, `token/*`, `coupon/check`, `req_move_code`, `validate_move_code`, `move_data`, `reset_user_data`
+`withdrawal`, `login_apple`, `user/get_other_user_info`, `insert_logItem`, `insert_log_ads`, `insert_log_switch`, `shop/*`, `aos/validate*`, `ios/validate*`, `inapp/*`, `insert_subItem`, `mailbox/*`, `user_event/*`, `personal_event/*`, `diamond/restore`, `user/get_other_user_info_by_tag`, `social/help_fr`, `user_tag/add_point*`, `user_tag/get_user_tag_idx`, `bookmark/new_bookmark`, `bookmark/delete_bookmark`, `token/*` (except `token/get_season_token`), `coupon/check`, `req_move_code`, `validate_move_code`, `move_data`, `reset_user_data`
+
+The social endpoints still on the generic reply (`user/get_other_user_info_by_tag`, `social/help_fr`, `user_tag/add_point*`, `bookmark/new_bookmark`, `bookmark/delete_bookmark`) have not been tested, so adding a friend, visiting a friend and helping a friend may freeze. Only the nickname setup and opening the social menu have been confirmed to work. The ranking, search and friends screens are replied to with empty lists and have not been checked on screen. The friend code is made up by the server (the first 8 characters of an MD5 of the local GUID, upper-cased); the game does not require that format.
 
 The `insert_log*` endpoints are analytics and are fine with the envelope alone.
 
@@ -80,3 +94,18 @@ The `insert_log*` endpoints are analytics and are fine with the envelope alone.
 8. `WaitForLoadingAD`
 
 After loading: `deco/get_preset` (once decoration is unlocked), `coupon/state`, `daily_reset/get_daily_reset`, `daily_quest/get_daily_quest` when daily quests open, then `get_event` and `token/get_season_token`.
+
+## How the replies were found
+
+The keys above come from the compiled game, not from guessing. Guessing failed more than once: guessed `get_event` keys did not match, and a nickname sent as a plain string where the game wanted an object froze the screen.
+
+1. Get `libil2cpp.so` (arm64) and `global-metadata.dat` out of the APK/XAPK.
+2. Run [Il2CppDumper](https://github.com/Perfare/Il2CppDumper) on them. It writes `dump.cs` (every class and field, e.g. `Social_UserTag`) and `script.json` (method and string names with addresses).
+3. Find the callback for the request. Reply handlers are compiler-generated methods named like `<LoadSocialInfos>b__0`, inside the screen's class.
+4. Disassemble it with `tools/disasm.py`: python3 tools/disasm.py --so libil2cpp.so --script script.json "SocialController" --max 400
+
+The output labels the string literals and calls. Look at the JSON keys and how each is read:
+   - a call to `JObject$$get_Item` is a **required** key: if it is missing, the game freezes
+   - a call to `JObject$$TryGetValue` or `ContainsKey` is an **optional** key
+   - `ToObject<...>` names the class the value must fit, so look that class up in `dump.cs` for the field names and types
+5. Teach the server to send exactly those keys, then test with `curl` before testing in the game.
