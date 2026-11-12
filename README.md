@@ -6,7 +6,7 @@ This project is a small stand-in server that runs on your own computer, plus a p
 
 > **This repository contains no game files.** You download the game yourself (see step 2). The patcher only changes your own copy. This is an unofficial fan project, not affiliated with Flero Games or LikeitGames. All rights to Dear My Cat belong to its owners.
 
-**Status:** loading, cats, decorating, daily quests and saving all work. Setting a nickname and opening the social menu work, however, friends, ranking and helping a friend are untested or may not work. Features that used the online service (shop purchases, mail, events) remain untested. See [docs/FINDINGS.md](docs/FINDINGS.md).
+**Status:** loading, cats, decorating, daily quests, harvesting Happiness Berries and saving all work. The Shop and Package screens open, but purchases with real money don't work (there is no Google Play billing), and items normally priced by Google Play may show no price. Setting a nickname and opening the social menu work, however, friends, ranking and helping a friend are untested or may not work. Other features that used the online service (mail, events) remain untested. See [docs/FINDINGS.md](docs/FINDINGS.md).
 
 **Tested on:** macOS (Apple Silicon) with BlueStacks Air. Windows should work the same way but hasn't been tested yet. Reports are welcome.
 
@@ -51,20 +51,24 @@ It must be **2.1.9**, the final version. Keep the original file somewhere safe a
 Put the `uber-apk-signer-*.jar` in the `patcher` folder or your Downloads folder, then run:
 
 ```
-python3 patcher/patch.py "path/to/Dear My Cat_2.1.9.xapk"
+python3 patcher/patch.py "path/to/Dear My Cat_2.1.9.xapk" --out patched-new
 ```
 
 The patcher:
 - finds your computer's network address (for example `192.168.0.25`)
 - writes it into the game
+- lets the game use a plain-http connection to your computer
+- changes one check in the game's code (inside the arm64 part of the XAPK, `config.arm64_v8a.apk`) so the Shop and Package screens open without Google Play
 - signs the result
 
-It prints the exact commands to install the game. The patched files go in a `patched` folder.
+It prints the exact commands to install the game. The patched files go in the folder you name with `--out`. Without `--out` they go in a folder called `patched`, inside whatever folder your terminal is in.
+
+> **Use a new `--out` folder name each time.** The patcher **deletes** the `--out` folder (or `patched`) first if it already exists, including anything else you kept in it.
 
 If it picks the wrong address (for example a VPN address), pass yours with `--ip`:
 
 ```
-python3 patcher/patch.py "Dear My Cat.xapk" --ip 192.168.0.25
+python3 patcher/patch.py "Dear My Cat.xapk" --ip 192.168.0.25 --out patched-new
 ```
 
 To find your address: Mac: System Settings → Wi-Fi → Details. Windows: `ipconfig`, then look for "IPv4 Address".
@@ -101,6 +105,12 @@ The game only knows the address it was patched with. If your router gives your c
 
 The server window shows each request the game makes. Your progress is saved in `server/dmc_save.json`. **Back up that file.**
 
+**Daily limits** (like the 3 arcade mini-game plays and their "Time left" countdown) start fresh every time you restart the game. This resets every daily limit, not only the arcade. If you'd rather wait for the game's own 24-hour timer, like the original server, start the server like this instead:
+
+```
+python3 server/fakeserver.py --real-daily-reset
+```
+
 ---
 
 ## Troubleshooting
@@ -108,11 +118,15 @@ The server window shows each request the game makes. Your progress is saved in `
 | What you see | Likely cause | Fix |
 |---|---|---|
 | "Unstable internet connection" popup | The server isn't running, your computer's address changed, or a firewall is blocking it | Start the server. Check that the address it prints matches the one you patched. Allow it through the firewall. |
+| "Unstable internet connection", and the server window shows only `/ping` lines and no other requests | The game installed in BlueStacks isn't the one you just patched (an older build with another address, or the original game) | Uninstall the game and install the freshly patched files again (step 4). To check the connection, open Chrome inside BlueStacks and visit `http://YOUR-IP:19000/ping`: it should answer. |
 | You can't tell whether BlueStacks can reach your computer | — | Open Chrome inside BlueStacks and visit `http://YOUR-IP:19000/ping`. You should see a line of text starting with `{"err": 200`. |
 | Stuck on a loading screen, or a screen dims and freezes | The server is missing a reply the game needs | Look at the **last line** in the server window, then open an issue (see below). |
 | `INSTALL_FAILED_...` while installing | The original game is still installed | `adb uninstall com.flerogames.AfterRain`, then install again. |
 | `Failure [INSTALL_FAILED_MEDIA_UNAVAILABLE]` followed by `Success` | adb's fast-install mode failed and it fell back to a normal install | Nothing to fix: it installed. Add `--no-incremental` to skip the message. |
 | Patcher says "Unable to locate a Java Runtime" | Java isn't installed or can't be found | Install Java (see the table above). |
+| `adb: more than one device/emulator` | More than one emulator or device is connected | Add `-s NAME` to the uninstall and install commands, using a name from `adb devices` (e.g. `emulator-5554` or `127.0.0.1:5555`): `./adb -s 127.0.0.1:5555 uninstall com.flerogames.AfterRain` |
+| Files you had kept in the patched folder are gone | The patcher deletes its output folder before writing to it | Run the patcher with a new `--out` folder name each time (step 3). |
+| "permission denied" after typing a folder path in Terminal | Typing a folder path on its own tries to run it | Type `cd` and a space before the path, e.g. `cd ~/Downloads/dear-my-cat-revival` |
 
 ### Reporting a problem
 
@@ -128,7 +142,8 @@ Most fixes so far were a single missing field in one reply. Contributors can wor
 ## How it works (short version)
 
 - The game used to contact `https://afterrain-live.likeitgamessvc.com`, which no longer exists.
-- The patcher replaces that address inside the game with `http://<your computer>:19000/…` and switches on Unity's "allow plain HTTP" setting. It changes nothing else.
+- The patcher replaces that address inside the game with `http://<your computer>:19000/…` and switches on Unity's "allow plain HTTP" setting.
+- It also changes 8 bytes in the game's code (`libil2cpp.so`, in the arm64 part of the XAPK) so the game's "is the Google Play store ready?" check always says yes. That lets the Shop and Package screens open. Real-money purchases still can't work. Details in [docs/FINDINGS.md](docs/FINDINGS.md). It changes nothing else.
 - `server/fakeserver.py` answers the game's requests in the format its code expects. That format was worked out by reading the game's compiled code (details in [docs/FINDINGS.md](docs/FINDINGS.md)). Saves the game uploads are kept in `dmc_save.json` and handed back at login.
 
 ## License

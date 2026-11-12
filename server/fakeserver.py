@@ -1,6 +1,7 @@
 """
-fakeserver6.py - stand-in server for Dear My Cat 2.1.9, built from the game's own code.
-(Your fakeserver.py plus the social / nickname handlers.)
+fakeserver.py - stand-in server for Dear My Cat 2.1.9, built from the game's own code.
+(Includes the social / nickname handlers, user_tag/add_point (the Happiness Tree
+ harvest button), and daily limits that start fresh on every game login.)
 
 Run:   python3 server/fakeserver.py              (port 19000, saves next to this file)
        python3 server/fakeserver.py --port 19000 --data-dir ~/DearMyCatSave
@@ -29,6 +30,15 @@ What the game's code expects (found by disassembling version 2.1.9):
     social/get_last_season_hallfame REQUIRES "hallfame" (array).
     social/social_info keys are all optional (user_tag, behelped_infos, bookmarks).
     Your nickname profile is kept in dmc_save.json under "social_tag".
+  * user_tag/add_point: sent when Happiness Berries are harvested (request: point, rnds).
+                        Unhandled, the screen dims and the request queue jams. The reply
+                        carries the updated "user_tag" plus point / my_point / ranking_point /
+                        season. Which of those the game REQUIRES was not confirmed, so all
+                        are sent. The amount (e.g. 21) is worked out by the game itself.
+  * daily_reset/*:      the game's daily limits (arcade plays, the 24h "Time left"
+                        countdown) are stored in "ddata". The server forgets them at every
+                        login, so restarting the game starts a new day. Use
+                        --real-daily-reset to keep them for the game's own 24h timer.
   * udata / deco_data are the game's save files as JSON text; "{}" means "nothing
     stored on the server, keep the save on the device".
 
@@ -59,6 +69,10 @@ _ap = argparse.ArgumentParser(description="Stand-in server for Dear My Cat")
 _ap.add_argument("--port", type=int, default=19000)
 _ap.add_argument("--data-dir", default=os.path.dirname(os.path.abspath(__file__)),
                  help="folder for dmc_save.json and requests.log")
+_ap.add_argument("--real-daily-reset", action="store_true",
+                 help="keep daily limits (arcade plays...) until the game's own 24h timer "
+                      "runs out, like the original server. Default: every game restart "
+                      "(login) starts a fresh day.")
 ARGS = _ap.parse_args()
 
 PORT = ARGS.port
@@ -143,6 +157,12 @@ def h_ver_check(p):
 
 
 def h_login(p):
+    # daily_reset/ddata holds the game's daily limits (arcade plays left, the 24h
+    # "Time left" countdown...). The original server only reset them once a day.
+    # By default we forget them at each login, so restarting the game = a new day.
+    if not ARGS.real_daily_reset and "ddata" in STATE:
+        STATE.pop("ddata", None)
+        save_state(STATE)
     return ok(session_id=SESSION, user=user_obj(), umoneydata=money())
 
 
@@ -387,6 +407,20 @@ def h_get_rnd_tags(p):
     return ok(user_tags=[])
 
 
+def h_add_point(p):
+    """user_tag/add_point: sent when you harvest Happiness Berries (request: point, rnds).
+    Which key the game requires back was NOT confirmed from its code, so this sends
+    the updated profile under every name the social code is known to read."""
+    t = _my_tag()
+    add = _int(p.get("point"))
+    if t is None:
+        return ok(point=add, my_point=add)
+    t["point"] = _int(t.get("point")) + add
+    save_state(STATE)
+    return ok(user_tag=t, point=t["point"], my_point=t["point"],
+              ranking_point=_int(t.get("ranking_point")), season=_int(t.get("season"), 1))
+
+
 HANDLERS = {
     "/ping": h_ping,
     "/ver/check": h_ver_check,
@@ -444,6 +478,8 @@ class Handler(BaseHTTPRequestHandler):
         path = PADDING.sub("", self.path.split("?")[0]) or "/"
 
         handler = HANDLERS.get(path)
+        if handler is None and path.startswith("/user_tag/add_point"):
+            handler = h_add_point          # add_point_* variants
         tag = "" if handler else "  >>> UNHANDLED <<< [no special handler, sent plain success]"
         try:
             reply = (handler or (lambda p: ok()))(params)
@@ -497,6 +533,8 @@ if __name__ == "__main__":
     print("Dear My Cat server listening on port %d" % PORT, flush=True)
     print("This computer's address: %s  (must match the address you patched in)" % local_ip())
     print("save: %s\nlog:  %s\nfull: %s" % (SAVEFILE, LOGFILE, FULLLOG), flush=True)
+    print("daily limits: %s" % ("real 24h timer" if ARGS.real_daily_reset
+                                else "reset on every game login"), flush=True)
     try:
         ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
     except KeyboardInterrupt:

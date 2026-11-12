@@ -54,8 +54,8 @@ The game's own Unity log is silent after startup, so `adb logcat` does not show 
 | `new_session` | — | Optional `session_id` |
 | `daily_quest/get_daily_quest` | `daily_quest` | `null` makes the game generate new quests. Otherwise send `{"dq_data": <object>}` (`Daily_GetRespone`). `dq_data` needs a non-zero `forceResetVer` or the game regenerates the quests. **A missing key leaves the screen dimmed after inviting a cat.** |
 | `daily_quest/cu_daily_quest` | — | The request carries `dq_data` (JSON text) |
-| `daily_reset/get_daily_reset` | — | Optional `daily_reset.ddata` object (`DailyResetData`). If absent, the game starts a new day's limits. |
-| `daily_reset/update_daily_reset` | — | The request carries `ddata` (JSON text) |
+| `daily_reset/get_daily_reset` | — | Optional `daily_reset.ddata` object (`DailyResetData`). If absent, the game starts a new day's limits. `ddata` holds the game's daily limits, including the arcade mini-game plays and their 24h "Time left" window. If the server hands back the stored `ddata`, the game keeps those limits until its own 24h timer runs out (arcade stays at "0 / 3" across restarts). By default `fakeserver.py` drops the stored `ddata` at every `login`, so each game restart starts a new day; **every** limit in `ddata` resets, not only the arcade. Start the server with `--real-daily-reset` to keep `ddata` and let the game's 24h timer decide, like the original server. |
+| `daily_reset/update_daily_reset` | — | The request carries `ddata` (JSON text). The server stores it. Keys seen in the log (all booleans): `CheckShop`, `LimitedMainEvent`, `GachaBox`, `DailyRequestQuest`, `MiniGamePlayLimit`, `DreamPictureAdLimit`, `CheckOneDayPackage`. What each flag means has **not** been confirmed. |
 | `coupon/state` | — | Optional `status` |
 | `user/get_user_platform` | — | Reads `is_user` (only used when changing the platform account) |
 | `deco/get_preset` | `preset` (list) | Each item is `DecoPresetServerData`: `preset_idx`, `user_idx`, `slot_idx` (0–5), `pdata` (a `LocalDecoPresetData` **object**, not text, and never null). `[]` means no presets. The game shows a loading overlay before asking and only hides it in this handler, so **a missing key freezes the decoration screen (level 7 tutorial).** Called after loading, from `_CheckDecoPresetServerMatch`, once decoration is unlocked. |
@@ -71,16 +71,47 @@ The game's own Unity log is silent after startup, so `adb logcat` does not show 
 | `social/get_be_helped_infos`, `social/get_be_helped_infos_by_rnds` | — | Optional `behelped_infos` (list). `[]` means nobody has helped. |
 | `social/get_last_season_hallfame` | `hallfame` (list) | Ranking screen. `[]` means no entries. |
 | `bookmark/get_bookmarks` | `bookmarks` (list) | Friends list. `[]` means no friends. |
+| `user_tag/add_point` (and any `user_tag/add_point*` path) | not confirmed | Sent when Happiness Tree → "Harvest Happiness Berries" is tapped. The request carries `point` and `rnds` (seen: `{"point": 21, "rnds": 1}`). `point` was the "Total yield" the game showed before the tap, so the amount is worked out by the game, not the server; the server cannot change what the player collects. Left on the generic reply, **the screen dims and the request queue jams.** `fakeserver.py` adds `point` to the saved `social_tag.point` and replies with `user_tag` (updated), `point`, `my_point`, `ranking_point` and `season`. This reply is confirmed to work, but which of those keys the game actually requires has **not** been confirmed (the reply handler has not been disassembled yet). |
 
 ## Endpoints not handled yet (generic success reply)
 
 These come from `WAS.ServerAPI`. Some may freeze the screen that uses them:
 
-`withdrawal`, `login_apple`, `user/get_other_user_info`, `insert_logItem`, `insert_log_ads`, `insert_log_switch`, `shop/*`, `aos/validate*`, `ios/validate*`, `inapp/*`, `insert_subItem`, `mailbox/*`, `user_event/*`, `personal_event/*`, `diamond/restore`, `user/get_other_user_info_by_tag`, `social/help_fr`, `user_tag/add_point*`, `user_tag/get_user_tag_idx`, `bookmark/new_bookmark`, `bookmark/delete_bookmark`, `token/*` (except `token/get_season_token`), `coupon/check`, `req_move_code`, `validate_move_code`, `move_data`, `reset_user_data`
+`withdrawal`, `login_apple`, `user/get_other_user_info`, `insert_logItem`, `insert_log_ads`, `insert_log_switch`, `shop/*`, `aos/validate*`, `ios/validate*`, `inapp/*`, `insert_subItem`, `mailbox/*`, `user_event/*`, `personal_event/*`, `diamond/restore`, `user/get_other_user_info_by_tag`, `social/help_fr`, `user_tag/get_user_tag_idx`, `bookmark/new_bookmark`, `bookmark/delete_bookmark`, `token/*` (except `token/get_season_token`), `coupon/check`, `req_move_code`, `validate_move_code`, `move_data`, `reset_user_data`
 
-The social endpoints still on the generic reply (`user/get_other_user_info_by_tag`, `social/help_fr`, `user_tag/add_point*`, `bookmark/new_bookmark`, `bookmark/delete_bookmark`) have not been tested, so adding a friend, visiting a friend and helping a friend may freeze. Only the nickname setup and opening the social menu have been confirmed to work. The ranking, search and friends screens are replied to with empty lists and have not been checked on screen. The friend code is made up by the server (the first 8 characters of an MD5 of the local GUID, upper-cased); the game does not require that format.
+The social endpoints still on the generic reply (`user/get_other_user_info_by_tag`, `social/help_fr`, `bookmark/new_bookmark`, `bookmark/delete_bookmark`) have not been tested, so adding a friend, visiting a friend and helping a friend may freeze. Only the nickname setup and opening the social menu have been confirmed to work. The ranking, search and friends screens are replied to with empty lists and have not been checked on screen. The friend code is made up by the server (the first 8 characters of an MD5 of the local GUID, upper-cased); the game does not require that format.
 
 The `insert_log*` endpoints are analytics and are fine with the envelope alone.
+
+## Shop and Package: the Google Play check (client-side patch)
+
+Tapping **Shop** or **Package** showed the popup "Unable to access Google Play account information". **No request reached the server** (no `shop/*` or `inapp/*` lines in `requests.log`), so no server reply can fix this. Being signed in to the Play Store in BlueStacks did not help.
+
+Call chain (read from `dump.cs` and `tools/disasm.py`):
+
+- `ShopManager.OpenShopUI` calls `ShopManager.IsStoreInitialized`.
+- `IsStoreInitialized` returns true only if `InAppManager.IsInitialized()` is true (the Unity IAP store loaded more than 0 products) or `Main.buildType == 0` (Dev build).
+- Otherwise `OpenShopUI` shows the popup (localisation keys `local_shop_open_error_title` / `local_shop_open_error_init_store_aos`).
+
+`IsStoreInitialized` has three callers, so one patch covers all three:
+
+- `ShopManager.OpenShopUI`
+- `MenuPackageNoticeButton.OnClickBtnOpenPackage`
+- `PackageAlarmUI.OnClickBtnOpenPackage`
+
+The patch (in `patcher/patch.py`): `lib/arm64-v8a/libil2cpp.so`, which is in the arm64 split APK (`config.arm64_v8a.apk`) of the XAPK, not in the main APK. 8 bytes at **file offset `0x1FA635C`** (virtual address `0x1FAA35C`), the start of `ShopManager.IsStoreInitialized`:
+
+| | Bytes | Instructions |
+|---|---|---|
+| Original | `fe0f1ef8 f44f01a9` | `str x30,[sp,#-0x20]!` ; `stp x20,x19,[sp,#0x10]` |
+| Patched | `20008052 c0035fd6` | `mov w0,#1` ; `ret` |
+
+The patcher checks the original bytes first and stops if they differ (a different game version). The offsets are for **2.1.9 arm64 only**.
+
+Result: confirmed that Shop and Package open. Limits:
+
+- Real-money purchases still cannot work: `InAppManager.BuyProduct` has its own `IsInitialized` check.
+- Items normally priced by Google Play may show no price.
 
 ## Startup order (BTS loading processors)
 
