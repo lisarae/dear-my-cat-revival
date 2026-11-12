@@ -1,5 +1,6 @@
 """
-fakeserver.py - stand-in server for Dear My Cat 2.1.9, built from the game's own code.
+fakeserver6.py - stand-in server for Dear My Cat 2.1.9, built from the game's own code.
+(Your fakeserver.py plus the social / nickname handlers.)
 
 Run:   python3 server/fakeserver.py              (port 19000, saves next to this file)
        python3 server/fakeserver.py --port 19000 --data-dir ~/DearMyCatSave
@@ -20,6 +21,14 @@ What the game's code expects (found by disassembling version 2.1.9):
   * deco/insert_preset: "new_preset_idx": <int>
   * get_event:          "event_info": [] (list of running events).
                         Without it the game's request queue jams (see below).
+  * user_tag/make_tag:  the nickname OK button. "user_tag" REQUIRED (a Social_UserTag
+                        object). Without it the game's callback crashes and the request
+                        queue jams (screen stays dimmed, nothing else is sent).
+  * user_tag/get_user_tag REQUIRES "user_tag" (object), user_tag/get_rnd_tags REQUIRES
+    "user_tags" (array), bookmark/get_bookmarks REQUIRES "bookmarks" (array),
+    social/get_last_season_hallfame REQUIRES "hallfame" (array).
+    social/social_info keys are all optional (user_tag, behelped_infos, bookmarks).
+    Your nickname profile is kept in dmc_save.json under "social_tag".
   * udata / deco_data are the game's save files as JSON text; "{}" means "nothing
     stored on the server, keep the save on the device".
 
@@ -38,6 +47,7 @@ So a freeze can show up on a screen far away from the request that caused it.
 """
 import argparse
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -273,6 +283,110 @@ def h_season_token(p):
     return ok()
 
 
+# ---------- social: nickname / profile (formats read from the game's code) ----------
+def err_reply(code, message="error"):
+    return {"err": code, "message": message, "server_time": now()}
+
+
+def _my_tag():
+    t = STATE.get("social_tag")
+    return t if isinstance(t, dict) else None
+
+
+def _tag_code():
+    """A stable 8-character profile code for this local player."""
+    return hashlib.md5(GUID.encode()).hexdigest()[:8].upper()
+
+
+def _int(v, default=0):
+    return v if isinstance(v, int) and not isinstance(v, bool) else default
+
+
+def h_make_tag(p):
+    """user_tag/make_tag: the nickname OK button (first time).
+    The game REQUIRES "user_tag" as a Social_UserTag object in the reply."""
+    t = _my_tag() or {
+        "tag_idx": 1,
+        "user_idx": USER_IDX,
+        "tag": _tag_code(),
+        "point": 0,
+        "season": 1,
+        "ranking_point": 0,
+        "last_rnds": 0,
+    }
+    name = p.get("name")
+    t["name"] = name.strip()[:12] if isinstance(name, str) and name.strip() else "Player"
+    t["img_id"] = _int(p.get("img_id"))
+    t["local"] = _int(p.get("local"))
+    t["ver"] = p["ver"] if isinstance(p.get("ver"), str) and p["ver"] else "2.1.9"
+    t["login_date"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    STATE["social_tag"] = t
+    save_state(STATE)
+    return ok(user_tag=t)
+
+
+def h_change_name(p):
+    """user_tag/change_name: success only (the game charges the cost itself)."""
+    t = _my_tag()
+    name = p.get("name")
+    if t and isinstance(name, str) and name.strip():
+        t["name"] = name.strip()[:12]
+        save_state(STATE)
+    return ok()
+
+
+def h_change_img(p):
+    """user_tag/change_img: success only."""
+    t = _my_tag()
+    if t and isinstance(p.get("img_id"), int):
+        t["img_id"] = p["img_id"]
+        save_state(STATE)
+    return ok()
+
+
+def h_social_info(p):
+    """social/social_info: every key is optional. No user_tag = not registered
+    yet, so the game shows the nickname screen."""
+    reply = ok()
+    t = _my_tag()
+    if t:
+        reply["user_tag"] = t
+        reply["behelped_infos"] = []
+        reply["bookmarks"] = []
+    return reply
+
+
+def h_be_helped(p):
+    """social/get_be_helped_infos(_by_rnds): optional array, nobody has helped."""
+    return ok(behelped_infos=[])
+
+
+def h_hallfame(p):
+    """social/get_last_season_hallfame: the game REQUIRES "hallfame" (array)."""
+    return ok(hallfame=[])
+
+
+def h_get_bookmarks(p):
+    """bookmark/get_bookmarks: the game REQUIRES "bookmarks" (array)."""
+    return ok(bookmarks=[])
+
+
+def h_get_user_tag(p):
+    """user_tag/get_user_tag: search a player by profile code. The game REQUIRES
+    "user_tag" (object) on success. Only you exist, so anyone else is 'not found'.
+    8602 is a guess among the social error codes (8602, 8603, 8610, 8700)."""
+    t = _my_tag()
+    wanted = p.get("tag")
+    if t and isinstance(wanted, str) and wanted.strip().upper() == t["tag"]:
+        return ok(user_tag=t)
+    return err_reply(8602, "user not found")
+
+
+def h_get_rnd_tags(p):
+    """user_tag/get_rnd_tags: random players. The game REQUIRES "user_tags" (array)."""
+    return ok(user_tags=[])
+
+
 HANDLERS = {
     "/ping": h_ping,
     "/ver/check": h_ver_check,
@@ -293,6 +407,17 @@ HANDLERS = {
     "/deco/update_preset": h_update_preset,
     "/get_event": h_get_event,
     "/token/get_season_token": h_season_token,
+    # social
+    "/user_tag/make_tag": h_make_tag,
+    "/user_tag/change_name": h_change_name,
+    "/user_tag/change_img": h_change_img,
+    "/user_tag/get_user_tag": h_get_user_tag,
+    "/user_tag/get_rnd_tags": h_get_rnd_tags,
+    "/social/social_info": h_social_info,
+    "/social/get_be_helped_infos": h_be_helped,
+    "/social/get_be_helped_infos_by_rnds": h_be_helped,
+    "/social/get_last_season_hallfame": h_hallfame,
+    "/bookmark/get_bookmarks": h_get_bookmarks,
 }
 
 
