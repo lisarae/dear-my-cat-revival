@@ -11,7 +11,11 @@ What it changes (nothing else is touched):
      https://afterrain-live.likeitgamessvc.com  ->  http://<your-ip>:<port>/xxx...
   2. Unity's "Allow downloads over HTTP" setting (off -> always allowed),
      so the game may talk to a plain-http server.
-  3. Removes the old signature and re-signs both APK parts with one debug key
+  3. Makes the game believe the Google Play store is ready
+     (ShopManager.IsStoreInitialized always answers "yes"), so the Shop and
+     Package screens open even though no Google Play billing is available.
+     Purchases with real money still cannot work.
+  4. Removes the old signature and re-signs both APK parts with one debug key
      (uber-apk-signer), which Android requires before it will install them.
 
 Usage:
@@ -33,6 +37,14 @@ METADATA = "assets/bin/Data/Managed/Metadata/global-metadata.dat"
 GGM = "assets/bin/Data/globalgamemanagers"
 PACKAGE = "com.flerogames.AfterRain"
 EXPECTED_VERSION = "2.1.9"
+# libil2cpp.so (arm64) lives in the arm64 split APK of the XAPK.
+SO_PATH = "lib/arm64-v8a/libil2cpp.so"
+# ShopManager.IsStoreInitialized, file offset found with Il2CppDumper (dump.cs "Offset").
+# Original first 8 bytes:  str x30,[sp,#-0x20]! ; stp x20,x19,[sp,#0x10]
+# Replaced by:             mov w0,#1 ; ret
+STORE_OFFSET = 0x1FA635C
+STORE_ORIGINAL = bytes.fromhex("fe0f1ef8f44f01a9")
+STORE_PATCHED = bytes.fromhex("20008052c0035fd6")
 
 
 def fail(msg):
@@ -111,7 +123,34 @@ def patch_base_apk(src_bytes_or_path, dst, new_url):
                 print("  - redirected the server address (%d places)" % count)
             elif n == GGM:
                 data = patch_ggm(data)
+            elif n == SO_PATH:
+                data = patch_store_check(data)
             zout.writestr(item, data, compress_type=item.compress_type)
+
+
+def patch_store_check(data):
+    """Make ShopManager.IsStoreInitialized return true."""
+    if data[STORE_OFFSET:STORE_OFFSET + 8] != STORE_ORIGINAL:
+        fail("libil2cpp.so is not the expected 2.1.9 build (the Shop check was not where it should be).")
+    out = data[:STORE_OFFSET] + STORE_PATCHED + data[STORE_OFFSET + 8:]
+    print("  - Shop and Package screens no longer wait for Google Play")
+    return out
+
+
+def patch_split_apk(src, dst):
+    """Copy a split APK, patching libil2cpp.so if it holds one. Returns True if patched."""
+    patched = False
+    with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst, "w") as zout:
+        for item in zin.infolist():
+            n = item.filename
+            if is_signature(n):
+                continue
+            data = zin.read(n)
+            if n == SO_PATH:
+                data = patch_store_check(data)
+                patched = True
+            zout.writestr(item, data, compress_type=item.compress_type)
+    return patched
 
 
 def find_signer(explicit):
@@ -193,7 +232,10 @@ def main():
                     patch_base_apk(tmp, os.path.join(unsigned, n), new_url)
                     os.remove(tmp)
                 else:
-                    os.replace(tmp, os.path.join(unsigned, n))
+                    if patch_split_apk(tmp, os.path.join(unsigned, n)):
+                        os.remove(tmp)
+                    else:
+                        os.replace(tmp, os.path.join(unsigned, n))
     else:
         patch_base_apk(args.game, os.path.join(unsigned, PACKAGE + ".apk"), new_url)
         print("  (single APK given: if your copy came as an XAPK, use the XAPK instead)")
