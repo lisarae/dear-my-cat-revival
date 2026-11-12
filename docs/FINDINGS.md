@@ -72,12 +72,15 @@ The game's own Unity log is silent after startup, so `adb logcat` does not show 
 | `social/get_last_season_hallfame` | `hallfame` (list) | Ranking screen. `[]` means no entries. |
 | `bookmark/get_bookmarks` | `bookmarks` (list) | Friends list. `[]` means no friends. |
 | `user_tag/add_point` (and any `user_tag/add_point*` path) | not confirmed | Sent when Happiness Tree → "Harvest Happiness Berries" is tapped. The request carries `point` and `rnds` (seen: `{"point": 21, "rnds": 1}`). `point` was the "Total yield" the game showed before the tap, so the amount is worked out by the game, not the server; the server cannot change what the player collects. Left on the generic reply, **the screen dims and the request queue jams.** `fakeserver.py` adds `point` to the saved `social_tag.point` and replies with `user_tag` (updated), `point`, `my_point`, `ranking_point` and `season`. This reply is confirmed to work, but which of those keys the game actually requires has **not** been confirmed (the reply handler has not been disassembled yet). |
+| `personal_event/new_c_event` | `new_peronal_event` (object) | The Puzzle Event. Each puzzle appears to be its own event with its own `pe_id` (the one tested was 17). The request carries `pe_id`, `pe_data` (the game's `LocalPersonalEventData` as JSON text, `serverIdx` 0 when new) and `period` (seen: 4320). The reply key is spelled `new_peronal_event` in the game. It is a `ServerUserPersonalEventInfo`: `p_idx`, `user_idx`, `pe_id`, `pe_data` (an **object**, not text), `try_count`, `b_get` (a string). Sent every time the screen opens. **The game replaces its own copy of the event with this reply, so the reply must carry the latest saved data; a stale copy erases found pieces.** A missing key makes the game do nothing and show no error: the puzzle cards stay greyed out and tapping one only clicks. See [Puzzle Event](#puzzle-event-personal-events). |
+| `personal_event/update` | — | The request carries `p_idx` and `pe_data` (the whole event as JSON text). Sent after every change: a piece found, a box opened, the ad counter. The server stores `pe_data` by `p_idx`. Left on the generic reply, found pieces are lost. |
+| `personal_event/get_all_info` | `personal_events` (list) | Sent at every game start; the request has the common fields only. Each item is a `ServerUserPersonalEventInfo` (as above), and **every item needs a non-null `pe_data` object** or the handler crashes. A missing key makes the game load no events, so progress that is saved on the server does not show after a restart. `[]` means no events. |
 
 ## Endpoints not handled yet (generic success reply)
 
 These come from `WAS.ServerAPI`. Some may freeze the screen that uses them:
 
-`withdrawal`, `login_apple`, `user/get_other_user_info`, `insert_logItem`, `insert_log_ads`, `insert_log_switch`, `shop/*`, `aos/validate*`, `ios/validate*`, `inapp/*`, `insert_subItem`, `mailbox/*`, `user_event/*`, `personal_event/*`, `diamond/restore`, `user/get_other_user_info_by_tag`, `social/help_fr`, `user_tag/get_user_tag_idx`, `bookmark/new_bookmark`, `bookmark/delete_bookmark`, `token/*` (except `token/get_season_token`), `coupon/check`, `req_move_code`, `validate_move_code`, `move_data`, `reset_user_data`
+`withdrawal`, `login_apple`, `user/get_other_user_info`, `insert_logItem`, `insert_log_ads`, `insert_log_switch`, `shop/*`, `aos/validate*`, `ios/validate*`, `inapp/*`, `insert_subItem`, `mailbox/*`, `user_event/*`, the other `personal_event/*` endpoints (`c_event`, `finish`, `reopen`, `get_today_event`, `get_event_p_idx`), `diamond/restore`, `user/get_other_user_info_by_tag`, `social/help_fr`, `user_tag/get_user_tag_idx`, `bookmark/new_bookmark`, `bookmark/delete_bookmark`, `token/*` (except `token/get_season_token`), `coupon/check`, `req_move_code`, `validate_move_code`, `move_data`, `reset_user_data`
 
 The social endpoints still on the generic reply (`user/get_other_user_info_by_tag`, `social/help_fr`, `bookmark/new_bookmark`, `bookmark/delete_bookmark`) have not been tested, so adding a friend, visiting a friend and helping a friend may freeze. Only the nickname setup and opening the social menu have been confirmed to work. The ranking, search and friends screens are replied to with empty lists and have not been checked on screen. The friend code is made up by the server (the first 8 characters of an MD5 of the local GUID, upper-cased); the game does not require that format.
 
@@ -113,6 +116,33 @@ Result: confirmed that Shop and Package open. Limits:
 - Real-money purchases still cannot work: `InAppManager.BuyProduct` has its own `IsInitialized` check.
 - Items normally priced by Google Play may show no price.
 
+## Puzzle Event (personal events)
+
+The Puzzle Event screen uses the `personal_event/*` endpoints. The endpoint names were listed from `global-metadata.dat`: `c_event`, `new_c_event`, `update`, `get_all_info`, `get_today_event`, `get_event_p_idx`, `reopen` and `finish`. The replies were read from the game's code (`PersonalPuzzleEventInfoBtn.<_DoOpenPuzzleEvent>b__23_1` reads `new_peronal_event`; `PersonalEventController.<_LoadPersonalEventData>b__17_0` reads `personal_events`) and checked against `requests_full.log`.
+
+How it works, as seen in the log:
+
+- Each puzzle appears to be its own event with its own `pe_id`. The game also created dozens of other events in one burst of `new_c_event` requests (ids 1 to 67 were seen). It sends `update` with `oneDayAdLimit` set to `"10"` right after each creation.
+- `pe_data` is text in requests and an object in replies. Its fields (`LocalPersonalEventData`) are `serverIdx`, `id`, `puzzleInfoList` (the found piece ids as strings, for example `["8"]`), `tryCount`, `fixedEpicCounts`, `canOpenFreeBox`, `oneDayAdLimit`, `canGetReward`, `endGetReward` and `isOpen`.
+- Opening a box sends `update`, plus the usual `user/update` and `insert_logItem`. Nothing else reaches the server, so what a box contains appears to be decided by the game, not the server. A Silver Box can give something other than a puzzle piece.
+
+What went wrong while these were unhandled, in the order it was found:
+
+1. `new_c_event` on the generic reply: the puzzle cards were greyed out, and tapping one only made a click sound. No request was sent.
+2. `new_c_event` replying with the *first* copy of the event every time: found pieces vanished whenever the screen was reopened. The game replaced its copy with the stale reply and then sent that copy back in its next `update`.
+3. `update` on the generic reply: the server kept nothing.
+4. `get_all_info` on the generic reply: the server had the pieces, but the game started with no events and forgot them after a restart.
+
+`fakeserver.py` keeps every event in `dmc_save.json` under `personal_events`. The first time it sees a `pe_id`, it keeps the id and data the game already has if the game sends them, and otherwise gives the next free `p_idx`. After that, `update` stores the data, and `new_c_event` and `get_all_info` return the stored copy.
+
+Confirmed on screen: the puzzle cards open, a piece from an ad box (`oneDayAdLimit` went from `"10"` to `"9"`) was saved, and it was still there after reopening the screen and after restarting the game.
+
+Not confirmed:
+
+- What `b_get`, `try_count`, `period` (probably minutes), `fixedEpicCounts`, `canOpenFreeBox` and `canGetReward` mean. The server sends `b_get` as `"0"` (a guess) and never changes the others.
+- What `personal_event/c_event`, `finish`, `reopen`, `get_today_event` and `get_event_p_idx` do. They have not been seen in the log, so they stay on the generic reply. Event expiry and the reward for finishing a puzzle are not handled.
+- `user_event/get_user_event` and `user_event/cu_user_event` look like a separate event system and have not been looked at.
+
 ## Startup order (BTS loading processors)
 
 1. `DeviceSetting`
@@ -124,7 +154,7 @@ Result: confirmed that Shop and Package open. Limits:
 7. `TermsCheck`
 8. `WaitForLoadingAD`
 
-After loading: `deco/get_preset` (once decoration is unlocked), `coupon/state`, `daily_reset/get_daily_reset`, `daily_quest/get_daily_quest` when daily quests open, then `get_event` and `token/get_season_token`.
+After loading: `deco/get_preset` (once decoration is unlocked), `coupon/state`, `daily_reset/get_daily_reset`, `daily_quest/get_daily_quest` when daily quests open, then `get_event` and `token/get_season_token`. The game also sends `personal_event/get_all_info` at start (its place in this order was not checked).
 
 ## How the replies were found
 
@@ -140,3 +170,5 @@ The output labels the string literals and calls. Look at the JSON keys and how e
    - a call to `JObject$$TryGetValue` or `ContainsKey` is an **optional** key
    - `ToObject<...>` names the class the value must fit, so look that class up in `dump.cs` for the field names and types
 5. Teach the server to send exactly those keys, then test with `curl` before testing in the game.
+
+Tip: to see which endpoint names the game knows for a feature, run `strings -a global-metadata.dat | grep personal_event` (change the word for another feature). The file is one very long line, so the endpoint list is the last line printed, with stray punctuation between the names.

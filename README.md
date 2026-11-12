@@ -6,7 +6,7 @@ This project is a small stand-in server that runs on your own computer, plus a p
 
 > **This repository contains no game files.** You download the game yourself (see step 2). The patcher only changes your own copy. This is an unofficial fan project, not affiliated with Flero Games or LikeitGames. All rights to Dear My Cat belong to its owners.
 
-**Status:** loading, cats, decorating, daily quests, harvesting Happiness Berries and saving all work. The Shop and Package screens open, but purchases with real money don't work (there is no Google Play billing), and items normally priced by Google Play may show no price. Setting a nickname and opening the social menu work, however, friends, ranking and helping a friend are untested or may not work. Other features that used the online service (mail, events) remain untested. See [docs/FINDINGS.md](docs/FINDINGS.md).
+**Status:** loading, cats, decorating, daily quests, harvesting Happiness Berries and saving all work. The Shop and Package screens open, but purchases with real money don't work (there is no Google Play billing), and items normally priced by Google Play may show no price. Setting a nickname and opening the social menu work, however, friends, ranking and helping a friend are untested or may not work. The Puzzle Event opens and found puzzle pieces are kept between restarts. Other features that used the online service (mail, other events) remain untested. See [docs/FINDINGS.md](docs/FINDINGS.md).
 
 **Tested on:** macOS (Apple Silicon) with BlueStacks Air. Windows should work the same way but hasn't been tested yet. Reports are welcome.
 
