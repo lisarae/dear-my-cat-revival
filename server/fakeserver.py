@@ -1,7 +1,8 @@
 """
 fakeserver.py - stand-in server for Dear My Cat 2.1.9, built from the game's own code.
 (Includes the social / nickname handlers, user_tag/add_point (the Happiness Tree
- harvest button), and daily limits that start fresh on every game login.)
+ harvest button), the Puzzle Event (personal_event/*), and daily limits that start
+ fresh on every game login.)
 
 Run:   python3 server/fakeserver.py              (port 19000, saves next to this file)
        python3 server/fakeserver.py --port 19000 --data-dir ~/DearMyCatSave
@@ -39,6 +40,20 @@ What the game's code expects (found by disassembling version 2.1.9):
                         countdown) are stored in "ddata". The server forgets them at every
                         login, so restarting the game starts a new day. Use
                         --real-daily-reset to keep them for the game's own 24h timer.
+  * personal_event/new_c_event: the Puzzle Event (each puzzle is its own event, with its
+                        own pe_id). Sent every time the screen opens. The game REPLACES its own
+                        copy of the event with the reply, so the reply must carry the LATEST
+                        saved data (a stale copy erases found pieces). Needs "new_peronal_event"
+                        (the game's own spelling): a ServerUserPersonalEventInfo {p_idx,
+                        user_idx, pe_id, pe_data (an OBJECT), try_count, b_get (a string)}.
+                        If the key is missing the game quietly does nothing: the cards stay
+                        greyed out and taps only click.
+  * personal_event/update: request p_idx + pe_data (JSON text; puzzleInfoList holds the found
+                        piece ids). Reply: envelope only. The server must store it.
+  * personal_event/get_all_info: sent at every game start. Needs "personal_events": a list of
+                        the same objects, each with a non-null pe_data (null crashes the
+                        handler). If the key is missing the game loads no events, so found
+                        pieces seem to vanish after a restart.
   * udata / deco_data are the game's save files as JSON text; "{}" means "nothing
     stored on the server, keep the save on the device".
 
@@ -303,6 +318,86 @@ def h_season_token(p):
     return ok()
 
 
+# ---------- personal events (the Puzzle Event) ----------
+# Every puzzle is its own personal event (its own pe_id). From the game's real traffic:
+#  * personal_event/new_c_event is sent every time the screen opens: pe_id, pe_data (the
+#    game's LocalPersonalEventData as JSON text, serverIdx 0 when new) and period. The reply
+#    must hold "new_peronal_event" (sic), a ServerUserPersonalEventInfo, and the game REPLACES
+#    its own copy with the reply's pe_data. So the reply must carry the latest data.
+#  * personal_event/update: p_idx + pe_data (full copy as JSON text). Sent after each change
+#    (e.g. puzzleInfoList ["8"] = found piece 8). Reply: envelope only. We store it.
+# Events are kept in dmc_save.json under "personal_events" (pe_data stored as JSON text).
+# b_get is a string whose meaning was not confirmed from the game's code; "0" is a guess.
+def _pe_list():
+    return STATE.setdefault("personal_events", [])
+
+
+def _pe_dict(text):
+    try:
+        d = json.loads(text) if isinstance(text, str) else None
+    except ValueError:
+        d = None
+    return d if isinstance(d, dict) else None
+
+
+def _pe_obj(rec):
+    data = _pe_dict(rec.get("pe_data")) or {}
+    data["serverIdx"] = rec["p_idx"]
+    return {
+        "p_idx": rec["p_idx"],
+        "user_idx": USER_IDX,
+        "pe_id": rec["pe_id"],
+        "pe_data": data,
+        "try_count": _int(rec.get("try_count")),
+        "b_get": rec.get("b_get") if isinstance(rec.get("b_get"), str) else "0",
+    }
+
+
+def h_new_c_event(p):
+    events = _pe_list()
+    pe_id = _int(p.get("pe_id"))
+    rec = next((e for e in events if e.get("pe_id") == pe_id), None)
+    if rec is None:
+        # First time the server sees this event. Keep the id and the data the game already
+        # has when it sends them (e.g. a fresh save file but a game that remembers progress).
+        sent = _pe_dict(p.get("pe_data")) or {}
+        want = _int(sent.get("serverIdx"))
+        used = {_int(e.get("p_idx")) for e in events}
+        p_idx = want if want > 0 and want not in used else max(used | {0}) + 1
+        rec = {"p_idx": p_idx, "pe_id": pe_id,
+               "pe_data": json.dumps(sent, separators=(",", ":")) if sent else "{}",
+               "try_count": 0, "b_get": "0"}
+        events.append(rec)
+        save_state(STATE)
+    return ok(new_peronal_event=_pe_obj(rec))
+
+
+def h_pe_update(p):
+    events = _pe_list()
+    p_idx = _int(p.get("p_idx"))
+    data = _pe_dict(p.get("pe_data"))
+    if p_idx and data is not None:
+        rec = next((e for e in events if e.get("p_idx") == p_idx), None)
+        if rec is None:   # the server lost it: rebuild from the game's copy
+            pe_id = _int(data.get("id"))
+            rec = next((e for e in events if e.get("pe_id") == pe_id), None)
+            if rec is None:
+                rec = {"p_idx": p_idx, "pe_id": pe_id, "try_count": 0, "b_get": "0"}
+                events.append(rec)
+        rec["pe_data"] = json.dumps(data, separators=(",", ":"))
+        save_state(STATE)
+    return ok()
+
+
+def h_pe_all_info(p):
+    """personal_event/get_all_info: every event this player has, as the game saved it."""
+    out = []
+    for rec in sorted(_pe_list(), key=lambda e: _int(e.get("p_idx"))):
+        if _int(rec.get("p_idx")) > 0 and _pe_dict(rec.get("pe_data")):
+            out.append(_pe_obj(rec))
+    return ok(personal_events=out)
+
+
 # ---------- social: nickname / profile (formats read from the game's code) ----------
 def err_reply(code, message="error"):
     return {"err": code, "message": message, "server_time": now()}
@@ -441,6 +536,10 @@ HANDLERS = {
     "/deco/update_preset": h_update_preset,
     "/get_event": h_get_event,
     "/token/get_season_token": h_season_token,
+    # personal events (the Puzzle Event)
+    "/personal_event/new_c_event": h_new_c_event,
+    "/personal_event/update": h_pe_update,
+    "/personal_event/get_all_info": h_pe_all_info,
     # social
     "/user_tag/make_tag": h_make_tag,
     "/user_tag/change_name": h_change_name,
